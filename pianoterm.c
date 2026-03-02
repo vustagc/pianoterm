@@ -11,9 +11,10 @@
 #define _aseq_header_len 78
 #define _aseq_log_len 58
 #define _port_digits 4
-#define _conf_path ".config/pianoterm/config"
-#define _wsize(str) str, strlen(str)
-    
+#define _conf_path "/.config/pianoterm/config"
+#define _wlen(str) str, strlen(str)
+#define _wsize(str) str, sizeof(str)
+#define _wnext(c) while(*(c) == ' ') c++;
 
 const uint test_note = 21;
 const char *N_OFF = "Note off";
@@ -25,6 +26,7 @@ const char *N_ON = "Note on";
 // TODO: config to run command if (note on vs note off) (press/release)
 // TODO: allow config to use standard notation and convert to key code (C#1 = "echo hello")
 // TODO: allow usage just by passing in arguments, without config file
+// TODO: option to reload config file?
 //
 // alsactl (aseqdump) version 1.2.15.2
 //
@@ -74,16 +76,16 @@ int main(int argc, char**argv) {
 
     char port_str[_port_digits];
     snprintf(port_str, _port_digits, "%u", app.port);
-
     loadConfig(&app);
+
     if(pipe(app.channel) == -1){
-        write(_err, _wsize("pipe error\n"));
+        write(_err, _wlen("pipe error\n"));
         return 1;
     };
 
     int pid = fork();
     if(pid == -1) {
-        write(_err, _wsize("fork error\n"));
+        write(_err, _wlen("fork error\n"));
         return 1;
     }
 
@@ -93,11 +95,11 @@ int main(int argc, char**argv) {
         dup2(app.channel[_out], _err);
 
         execlp("aseqdump", "aseqdump", "-p", port_str, 0);
-        write(_out, _wsize("_exit\n"));
+        write(_out, _wlen("_exit\n"));
     } else {
-        write(_out, _wsize("Listening for MIDI input on port "));
-        write(_out, _wsize(port_str));
-        write(_out, _wsize("\n"));
+        write(_out, _wlen("Listening for MIDI input on port "));
+        write(_out, _wlen(port_str));
+        write(_out, _wlen("\n"));
 
         bool blocked = true;
         fd_set fds;
@@ -136,45 +138,103 @@ int main(int argc, char**argv) {
 void loadConfig(Data *app){
     const char* home = getenv("HOME");
     if(!home) {
-        write(_err, _wsize("$HOME variable not set\n"));
+        write(_err, _wlen("$HOME variable not set\n"));
         return;
     }
 
-    char path[strlen(home) + strlen(_conf_path)];
-    snprintf(path, strlen(path),"%s/%s", home, _conf_path);
+    char path[strlen(home) + strlen(_conf_path) + 1];
+    snprintf(_wsize(path), "%s%s", home, _conf_path);
 
     int fd = open(path, O_RDONLY);
     if(fd == -1) {
-        write(_err, _wsize("Config file not found: "));
-        write(_err, _wsize(path));
-        write(_err, _wsize("\n"));
+        write(_err, _wlen("Error opening config file "));
+        write(_err, _wlen(path));
+        write(_err, _wlen("\n"));
         return;
     }
 
-    char buf;
-    while(read(fd, &buf, 1) > 0){
-       write(_out, &buf, 1);
+    char b;
+    uint l_count = 0;
+    while(read(fd, &b, 1) > 0){
+       if(b == '\n') l_count++;
     }
+    lseek(fd, 0, SEEK_SET);
+
+    char *lines[l_count];
+
+    uint l_cur = 0;
+    uint l_bytes = 0;
+    uint pos = 0;
+    while(read(fd, &b, 1) > 0){
+       pos++;
+       l_bytes++;
+       if(b != '\n') continue;
+
+       //TODO: error handling
+       lines[l_cur] = (char*)malloc(l_bytes*sizeof(char));
+       lseek(fd, pos - l_bytes, SEEK_SET);
+       for(int i = 0; i < l_bytes; i++){
+           read(fd, &b, 1);
+           lines[l_cur][i] = b;
+       }
+
+       lines[l_cur][l_bytes-1] = 0;
+       l_bytes = 0;
+       l_cur++;
+    }
+
+    UserCommand commands[l_count];
+
+    for(l_cur = 0; l_cur < l_count; l_cur++){
+        char *c = lines[l_cur];
+        _wnext(c);
+        if(*c == '#' || *c == 0)
+            continue;
+
+        char *end;
+        long int note = strtol(c, &end, 10);
+        if(note == 0) continue;
+        if(end) c = end;
+
+        _wnext(c);
+        if(*c != '=') continue;
+        c++; _wnext(c);
+        if(*c == 0) continue;
+
+        int last = strlen(lines[l_cur]);
+        int cmd_len = (int)(&lines[l_cur][last] - c);
+
+        if(app->n_commands == 0)
+            app->commands = (UserCommand*)malloc(sizeof(UserCommand));
+        else
+            app->commands = (UserCommand*)realloc(app->commands, sizeof(UserCommand)*(app->n_commands + 1));
+
+        app->commands[app->n_commands].str = (char*) malloc(sizeof(char)*cmd_len);
+        for(int i = 0; i < cmd_len; i++)
+            app->commands[app->n_commands].str[i] = *(c++);
+        app->commands[app->n_commands].note = note;
+
+        //assert(*c == 0)
+        if(*c != 0){
+            write(_err, _wlen("panic - c should be 0\n"));
+            exit(-1);
+        }
+
+        app->n_commands++;
+    }
+
+    for(l_cur = 0; l_cur < l_count; l_cur++)
+        free(lines[l_cur]);
 
     close(fd);
 }
 
 void runCommand(Data app, uint for_note){
-    // 21 = notify-send 'hello'
-    const char *test_cmd_0 = "notify-send hello";
-    // 21 = notify-send hello
-    const char *test_cmd = "notify-send 'hello hello'";
-    // 21 = notify-send hello goodbye
-    const char *test_cmd_2 = "  notify-send   hello goodbye ";
-    // 21 = notify-send 'command 1' && notify-send 'command 2'!
-    const char *test_cmd_3 = "notify-send 'command 1!' && notify-send 'command 2!'";
-    const char *test_cmd_4 = "/home/guts/.config/user/scripts/calendar.sh";
+    for(int i = 0; i < app.n_commands; i++)
+    {
+        if(for_note != app.commands[i].note) continue;
 
-    const char *str = test_cmd_2;
-
-    // for(int i = 0; i < app.n_commands; i++)
-    // {
-        ShellCommand *c = parseCommand(str);
+        ShellCommand *c = parseCommand(app.commands[i].str);
         if(c){
             int pid = fork();
             if(pid == 0)
@@ -184,19 +244,13 @@ void runCommand(Data app, uint for_note){
 
             freeCommand(c);
         };
-    // }
-
-    // if(for_note == test_note)
-    // {
-    //     const char *test[] = {"playerctl", "play-pause", 0};
-    //     //"playerctl play-pause"
-    //     if(fork() == 0)
-    //         execlp("playerctl", "playerctl", "play-pause", 0);
-    // }
+    }
 }
 
 ShellCommand* parseCommand(const char* src){
     ShellCommand *c = (ShellCommand*) malloc(sizeof(ShellCommand));
+    c->argv = 0;
+    c->path = 0;
     uint len = strlen(src);
     bool in_quote = false;
     uint pos = 0;
@@ -224,7 +278,8 @@ mainloop: while(pos <= len){
            c->argc++;
 
            while(src[pos] == ' ' || src[pos] == 0){
-               pos++; if(pos >= len) break mainloop;
+               pos++; 
+               if(pos >= len) break mainloop;
            }
            word_start = pos;
            continue;
@@ -234,7 +289,7 @@ mainloop: while(pos <= len){
     }
 
     if(in_quote){
-        write(_err, _wsize("command syntax error: unclosed quote\n"));
+        write(_err, _wlen("command syntax error: unclosed quote\n"));
         freeCommand(c);
         return 0;
     }
@@ -267,22 +322,22 @@ int readLine(Data *app, int len){
     int bytes = read(app->channel[_in], app->buffer, len);
 
     if(strncmp(app->buffer, "_exit", 5) == 0){
-        write(_err, _wsize("could not find/start aseqdump\n"));
+        write(_err, _wlen("could not find/start aseqdump\n"));
         return -1;
     }
 
     if(strstr(app->buffer, "Cannot connect") != 0){
-        write(_err, _wsize("Could not connect to port\n"));
+        write(_err, _wlen("Could not connect to port\n"));
         return -1;
     }
 
     if(strstr(app->buffer, "Port unsubscribed") != 0){
-        write(_err, _wsize("Lost connection to port %d\n"));
+        write(_err, _wlen("Lost connection to port %d\n"));
         return -1;
     }
 
     if(bytes == -1){
-        write(_err, _wsize("read error\n"));
+        write(_err, _wlen("read error\n"));
         return -1;
     }
     app->buffer[bytes] = 0;
