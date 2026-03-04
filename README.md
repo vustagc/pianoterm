@@ -59,3 +59,7 @@ cd pianoterm && make
 - C compiler
 - alsactl (1.2.15.2)
 - make (optional)
+
+## Playing Supertux on the Piano
+
+https://github.com/user-attachments/assets/718a9328-6b70-4cfa-97d6-e355dd0e5b6a
