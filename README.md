@@ -22,7 +22,7 @@ Assumes ALSA is used as the soundcard driver, you can use acconnect -i to find t
 # This is a comment
 #
 # Triggers: [on_release|on_press|on_hold]
-# Syntax: port = command
+# Syntax: key = command
 # Use aseqdump -p <port> to find specific keycodes
 
 # Examples
