@@ -4,13 +4,13 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <wait.h>
+#include <errno.h>
 
 #define UINT16_MAX 65535
 #define _out STDOUT_FILENO
 #define _in STDIN_FILENO
 #define _err STDERR_FILENO
-#define _aseq_header_len 78
-#define _aseq_log_len 58
+#define _aseq_log_len 78
 #define _port_digits 4
 #define _repeat_delay 100000
 #define _conf_path "/.config/pianoterm/config"
@@ -22,6 +22,7 @@
 
 const char *N_OFF = "Note off";
 const char *N_ON = "Note on";
+const char *C_CH = "Control change";
 
 // TODO: reconnect automatically on disconnect/connect
 // TODO: chord on_press support (store multiple notes in a cmd)
@@ -29,9 +30,9 @@ const char *N_ON = "Note on";
 // change user_cmd to store an array of notes (can be static, since only 10)
 // read the next 10 lines, instead of one-by-one, check if 'note on' matches notes in cmd (for n lines in cmd)
 // also figure out syntax for config file
-//
 // TODO: if no argument is passed try to find the port, using aconnect -i
 // TODO: allow config to use standard notation and convert to key code (C#1 = "echo hello")
+// TODO: option to pass in config file path
 // TODO: option to reload config file?
 // TODO: check if instance already running on the same port
 //
@@ -44,6 +45,12 @@ enum trigger {
 };
 typedef enum trigger Trigger;
 
+enum event_type {
+    e_note,
+    e_controller
+};
+typedef enum event_type EventType;
+
 struct shell_command {
     char *path;
     uint argc;
@@ -52,16 +59,24 @@ struct shell_command {
 typedef struct shell_command ShellCommand;
 
 struct user_command {
-    uint note; // uint note[10]; uint n_notes;
-    Trigger trigger;
+    uint midi_id; // note or controller
+    EventType type;
+    union {
+        Trigger note_trigger;
+        uint controller_value;
+    };
     char *str;
     int pid;
 };
 typedef struct user_command UserCommand;
 
 struct midi_event {
-    uint note;
-    Trigger trigger;
+    uint id;
+    EventType type;
+    union {
+        Trigger note_trigger;
+        uint controller_value;
+    };
 };
 typedef struct midi_event MidiEvent;
 
@@ -82,6 +97,7 @@ ShellCommand *parseCommand(char* src);
 void freeCommand(ShellCommand *cmd);
 void loadConfig(Data *app);
 char* seekToNext(char* cur, char target);
+void logCommands(Data app);
 
 int main(int argc, char**argv) {
     Data app;
@@ -107,6 +123,7 @@ int main(int argc, char**argv) {
     char port_str[_port_digits];
     snprintf(port_str, _port_digits, "%u", app.port);
     loadConfig(&app);
+    // logCommands(app);
 
     if(pipe(app.channel) == -1){
         write(_err, _wlen("pipe error\n"));
@@ -140,14 +157,14 @@ int main(int argc, char**argv) {
         struct timeval timeout = {.tv_sec = 0, .tv_usec = 100000};
         int leftover_msgs = select(app.channel[_in] + 1, &fds, 0, 0, &timeout);
         while(leftover_msgs) {
-            readLine(&app, _aseq_header_len);
+            readLine(&app, _aseq_log_len);
             leftover_msgs = select(app.channel[_in] + 1, &fds, 0, 0, &timeout);
             blocked = false;
         }
 
         while(1) {
             if(blocked) {
-                readLine(&app, _aseq_header_len);
+                readLine(&app, _aseq_log_len);
                 blocked = false;
             }
 
@@ -158,8 +175,9 @@ int main(int argc, char**argv) {
                 continue;
 
             MidiEvent event = getEvent(app);
-            if(event.note == -1) {
+            if(event.id == -1) {
                 //TODO: handle error
+                printf("event_err\n");
                 continue;
             }
             runCommand(&app, event);
@@ -183,12 +201,10 @@ void loadConfig(Data *app){
     snprintf(_wsize(path), "%s%s", home, _conf_path);
 
     int fd = open(path, O_RDONLY);
-    if(fd == -1) {
-        write(_err, _wlen("Error opening config file "));
-        write(_err, _wlen(path));
-        write(_err, _wlen("\n"));
-        return;
-    }
+    if(fd == -1) { return; }
+    write(_out, _wlen("Loding config: "));
+    write(_out, _wlen(_conf_path));
+    write(_out, _wlen("\n"));
 
     char b;
     uint l_count = 0;
@@ -253,12 +269,38 @@ void loadConfig(Data *app){
             }
         }
 
-        char *end;
-        long int note = strtol(c, &end, 10);
-        if(note == 0) continue;
-        if(end) c = end;
+        errno = 0;
+        char *end = 0;
+        long int midi_id = strtol(c, &end, 10);
+        if(errno || end == c) continue;
+        c = end;
 
         _wstart(c);
+
+        bool is_controller = false;
+        int controller_trigger_val = -1;
+        if (*c == '('){
+            is_controller = true;
+            char *val_end = seekToNext(c, ')');
+            if(*val_end == 0) {
+                write(_err, _wlen("Syntax error: Unclosed '('\n"));
+                continue;
+            }
+            c++;
+
+            end = 0;
+            errno = 0;
+            long int num = strtol(c, &end, 10);
+            if(errno || end == c || num < 0 || num > UINT16_MAX) {
+                write(_err, _wlen("Error: Invalid controller value\n"));
+                continue;
+            }
+            controller_trigger_val = num;
+
+            c = val_end;
+            c++; _wstart(c);
+        }
+
         if(*c != '=') continue;
 
         c++; _wstart(c);
@@ -280,9 +322,16 @@ void loadConfig(Data *app){
             app->commands[app->n_commands].str[i] = *(c++);
 
         app->commands[app->n_commands].str[cmd_len] = 0;
-        app->commands[app->n_commands].note = note;
-        app->commands[app->n_commands].trigger = app->trigger_state;
+        app->commands[app->n_commands].midi_id = midi_id;
         app->commands[app->n_commands].pid = -1;
+
+        if(is_controller){
+            app->commands[app->n_commands].type = e_controller;
+            app->commands[app->n_commands].controller_value = controller_trigger_val;
+        } else {
+            app->commands[app->n_commands].type = e_note;
+            app->commands[app->n_commands].note_trigger = app->trigger_state;
+        }
 
         app->n_commands++;
     }
@@ -295,50 +344,64 @@ void loadConfig(Data *app){
 
 void runCommand(Data *app, MidiEvent e){
     for(int i = 0; i < app->n_commands; i++){
-        if(app->commands[i].note != e.note)
-            continue;
-
-        Trigger t = app->commands[i].trigger;
-        if(t != on_hold && t != e.trigger)
+        if(app->commands[i].midi_id != e.id)
             continue;
 
         ShellCommand *c = parseCommand(app->commands[i].str);
-        if(c){
-            if(t == on_press || t == on_release){
-                if(fork() == 0){
-                    execvp(c->path, c->argv);
-                    exit(0);
-                }
-            } else if(t == on_hold){
-                if(e.trigger == on_press) {
-                    if(app->commands[i].pid > 0){
-                        kill(app->commands[i].pid, SIGKILL);
-                        waitpid(app->commands[i].pid, NULL, 0);
-                    }
+        if(!c) continue;
 
-                    int pid = fork();
-                    if(pid == 0) { // repeating process
-                        while(true) {
-                            if(fork() == 0) {
-                                execvp(c->path, c->argv);
-                                exit(0);
-                            }
-                            usleep(_repeat_delay);
+        switch(e.type){
+            case e_note:
+                Trigger t = app->commands[i].note_trigger;
+                if(t != on_hold && t != e.note_trigger)
+                    continue;
+
+                if(t == on_press || t == on_release){
+                    if(fork() == 0){
+                        execvp(c->path, c->argv);
+                        exit(0);
+                    }
+                } else if(t == on_hold){
+                    if(e.note_trigger == on_press) {
+                        if(app->commands[i].pid > 0){
+                            kill(app->commands[i].pid, SIGKILL);
+                            waitpid(app->commands[i].pid, NULL, 0);
                         }
-                    }
-                    app->commands[i].pid = pid;
-                }
-                if(e.trigger == on_release) {
-                    if(app->commands[i].pid > 0){
-                        kill(app->commands[i].pid, SIGKILL);
-                        waitpid(app->commands[i].pid, NULL, 0);
-                    }
-                    app->commands[i].pid = -1;
-                }
-            }
 
-            freeCommand(c);
-        };
+                        int pid = fork();
+                        if(pid == 0) { // repeating process
+                            while(true) {
+                                if(fork() == 0) {
+                                    execvp(c->path, c->argv);
+                                    exit(0);
+                                }
+                                usleep(_repeat_delay);
+                            }
+                        }
+                        app->commands[i].pid = pid;
+                    }
+                    if(e.note_trigger == on_release) {
+                        if(app->commands[i].pid > 0){
+                            kill(app->commands[i].pid, SIGKILL);
+                            waitpid(app->commands[i].pid, NULL, 0);
+                        }
+                        app->commands[i].pid = -1;
+                    }
+                }
+
+                break;
+            case e_controller:
+                if(e.controller_value == app->commands[i].controller_value){
+                    if(fork() == 0){
+                        execvp(c->path, c->argv);
+                        exit(0);
+                    }
+                }
+
+                break;
+        }
+
+        freeCommand(c);
     }
 }
 
@@ -431,24 +494,42 @@ int readLine(Data *app, int len){
 MidiEvent getEvent(Data app) {
     MidiEvent e;
 
-    if(strstr(app.buffer, N_ON))
-        e.trigger = on_press;
-    else if(strstr(app.buffer, N_OFF))
-        e.trigger = on_release;
-    else 
+    if(strstr(app.buffer, C_CH)) {
+        e.type = e_controller;
+    } else if(strstr(app.buffer, N_ON)){
+        e.type = e_note;
+        e.note_trigger = on_press;
+    } else if(strstr(app.buffer, N_OFF)) {
+        e.type = e_note;
+        e.note_trigger = on_release;
+    } else 
         goto err_unexpected_format;
 
-    char *note_pos = strstr(app.buffer, "note ");
-    if(!note_pos)
-        goto err_unexpected_format;
-    if(sscanf(note_pos, "note %3u,", &e.note) != 1)
-        goto err_unexpected_format;
+    switch(e.type) {
+        case e_note:
+            char *note_pos = strstr(app.buffer, "note ");
+            if(!note_pos)
+                goto err_unexpected_format;
+            if(sscanf(note_pos, "note %3u,", &e.id) != 1)
+                goto err_unexpected_format;
+            break;
+        case e_controller:
+            char *controller_pos = strstr(app.buffer, "controller ");
+            if(!controller_pos)
+                goto err_unexpected_format;
+            if(sscanf(controller_pos, "controller %3u,", &e.id) != 1)
+                goto err_unexpected_format;
+
+            char *value_pos = strstr(app.buffer, "value ");
+            if(sscanf(value_pos, "value %3u", &e.controller_value) != 1)
+                goto err_unexpected_format;
+    }
 
     return e;
 
 // should not trigger, unless aseqdump format changes
 err_unexpected_format:
-    e.note = -1;
+    e.id = -1;
     return e;
 }
 
@@ -457,3 +538,23 @@ char* seekToNext(char* cur, char target){
     while(!(*cur == target || *cur == 0)) cur++;
     return cur;
 };
+
+void logCommands(Data app)  {
+    printf("Commands: \n");
+    for(int i = 0; i < app.n_commands; i++){
+        UserCommand c = app.commands[i];
+        printf("%d ", c.midi_id);
+
+        if(c.type == e_controller){
+            printf("(%d) ", c.controller_value);
+        } else {
+            if(c.note_trigger == on_press){
+                printf("(on_press) ");
+            } else {
+                printf("(on_release) ");
+            }
+        }
+
+        printf("%s\n", c.str);
+    }
+}
