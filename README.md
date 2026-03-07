@@ -16,13 +16,11 @@ Note: Assumes ALSA is used as the soundcard driver, you can use acconnect -i to 
 
 ## Configuration
 
-- path: $HOME/.config/pianoterm/config
+- path: ~/.config/pianoterm/config
 
 ### Example Config
 
 ```conf
-# $HOME/.config/pianoterm/config
-
 ## Control audio playback
 on_press
 21 = playerctl previous # first key on an 88-key keyboard
@@ -37,16 +35,16 @@ on_release
 107 = ydotool key 108:0
 108 = ydotool key 103:0
 
-## Map controller events
-64 (127) = notify-send "Pressed pedal" # 127 in this case is the maximum value the pedal outputs
-64 (0)   = notify-send "Released pedal"
-
 ## Run custom scripts
 69 = /home/me/my_script.sh
 
 ## Assign multiple commands to run sequentially on the same key press
 60 = notify-send "command 1"
 60 = notify-send "command 2"
+
+## Map controller events (pedal presses, knob switches, ...)
+64 (127) = notify-send "Pressed pedal" # 127 in this case is the max pedal output
+64 (0)   = notify-send "Released pedal"
 ```
 
 ### Syntax Explanation
