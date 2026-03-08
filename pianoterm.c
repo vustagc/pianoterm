@@ -6,14 +6,16 @@
 #include <unistd.h>
 #include <wait.h>
 
+#define _conf_path "/.config/pianoterm/config"
+#define _retry_connection_secs 60
+#define _on_hold_repeat_delay 100000
+#define _port_digits 4
+
 #define UINT16_MAX 65535
+#define _aseq_log_len 78
 #define _out STDOUT_FILENO
 #define _in STDIN_FILENO
 #define _err STDERR_FILENO
-#define _aseq_log_len 78
-#define _port_digits 4
-#define _repeat_delay 100000
-#define _conf_path "/.config/pianoterm/config"
 #define _wlen(str) str, strlen(str)
 #define _wsize(str) str, sizeof(str)
 #define _wstart(c)                                                             \
@@ -30,7 +32,6 @@ const char *N_OFF = "Note off";
 const char *N_ON = "Note on";
 const char *C_CH = "Control change";
 
-// TODO: reconnect automatically on disconnect/connect
 // TODO: chord on_press support (store multiple notes in a cmd)
 // define a limit (10 for 10 fingers)
 // change user_cmd to store an array of notes (can be static, since only 10)
@@ -88,6 +89,7 @@ struct app_data {
   int channel[2];
   char buffer[124];
   uint port;
+  char port_str[_port_digits];
   Trigger trigger_state;
   UserCommand *commands;
   uint n_commands;
@@ -102,10 +104,16 @@ void freeCommand(ShellCommand *cmd);
 void loadConfig(Data *app);
 char *seekToNext(char *cur, char target);
 void logCommands(Data app);
+void waitForConnection(Data *app);
+int startAseqDump(Data *app, int last_pid);
+void clearChannel(Data *app);
 
 int main(int argc, char **argv) {
   Data app;
   app.trigger_state = on_press;
+  app.port = 0;
+  app.n_commands = 0;
+  memset(app.buffer, 0, sizeof(app.buffer));
 
   if (argc >= 2) {
     long int port = strtol(argv[1], NULL, 10);
@@ -124,8 +132,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  char port_str[_port_digits];
-  snprintf(port_str, _port_digits, "%u", app.port);
+  snprintf(app.port_str, _port_digits, "%u", app.port);
   loadConfig(&app);
   // logCommands(app);
 
@@ -133,63 +140,39 @@ int main(int argc, char **argv) {
     write(_err, _wlen("pipe error\n"));
     return 1;
   };
+  write(_out, _wlen("MIDI port "));
+  write(_out, _wlen(app.port_str));
+  write(_out, _wlen("\n"));
 
-  int pid = fork();
-  if (pid == -1) {
-    write(_err, _wlen("fork error\n"));
-    return 1;
+  int pid = -1;
+
+  waitForConnection(&app);
+  pid = startAseqDump(&app, pid);
+  clearChannel(&app);
+
+  while (1) {
+    int ret = readLine(&app, _aseq_log_len);
+
+    if (ret == -1) // error
+      break;
+    else if (ret == -2) { // reconnect
+      waitForConnection(&app);
+      pid = startAseqDump(&app, pid);
+      clearChannel(&app);
+      continue;
+    } else if (ret == 0) // wrong format
+      continue;
+
+    MidiEvent event = getEvent(app);
+    if (event.id == -1) {
+      printf("Unexpected error\n");
+      continue;
+    }
+    runCommand(&app, event);
   }
 
-  if (pid == 0) {
-    close(app.channel[_in]);
-    dup2(app.channel[_out], _out);
-    dup2(app.channel[_out], _err);
-
-    execlp("aseqdump", "aseqdump", "-p", port_str, 0);
-    write(_out, _wlen("_exit\n"));
-  } else {
-    write(_out, _wlen("Listening for MIDI input on port "));
-    write(_out, _wlen(port_str));
-    write(_out, _wlen("\n"));
-
-    bool blocked = true;
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(app.channel[_in], &fds);
-
-    // ignore any lingering messages
-    struct timeval timeout = {.tv_sec = 0, .tv_usec = 100000};
-    int leftover_msgs = select(app.channel[_in] + 1, &fds, 0, 0, &timeout);
-    while (leftover_msgs) {
-      readLine(&app, _aseq_log_len);
-      leftover_msgs = select(app.channel[_in] + 1, &fds, 0, 0, &timeout);
-      blocked = false;
-    }
-
-    while (1) {
-      if (blocked) {
-        readLine(&app, _aseq_log_len);
-        blocked = false;
-      }
-
-      int res = readLine(&app, _aseq_log_len);
-      if (res == -1) // error
-        break;
-      if (res == 0) // ignore
-        continue;
-
-      MidiEvent event = getEvent(app);
-      if (event.id == -1) {
-        // TODO: handle error
-        printf("event_err\n");
-        continue;
-      }
-      runCommand(&app, event);
-    }
-
-    kill(pid, SIGKILL);
-    waitpid(pid, NULL, 0);
-  }
+  kill(pid, SIGKILL);
+  waitpid(pid, NULL, 0);
 
   return 0;
 }
@@ -373,8 +356,8 @@ void runCommand(Data *app, MidiEvent e) {
       Trigger t = app->commands[i].note_trigger;
       if (t == e.note_trigger && t == on_press || t == on_release) {
         int pid = fork();
-        if (pid == -1){
-            continue;
+        if (pid == -1) {
+          continue;
         }
 
         if (pid == 0) {
@@ -393,12 +376,16 @@ void runCommand(Data *app, MidiEvent e) {
 
           int pid = fork();
           if (pid == 0) { // repeating process
+            // this should prob be a thread instead
             while (true) {
-              if (fork() == 0) {
+              int c_pid = fork();
+              if (c_pid) {
                 execvp(c->path, c->argv);
                 exit(0);
+              } else {
+                waitpid(c_pid, 0, 0);
               }
-              usleep(_repeat_delay);
+              usleep(_on_hold_repeat_delay);
             }
           }
           app->commands[i].pid = pid;
@@ -484,6 +471,7 @@ void freeCommand(ShellCommand *cmd) {
 
 // read line from aseqdump and update buffer
 // return values:
+// (-2) should reconnect
 // (-1) error
 // (0) ignore, wrong format
 // (1) ok, expected format
@@ -501,13 +489,13 @@ int readLine(Data *app, int len) {
   }
 
   if (strstr(app->buffer, "Cannot connect") != 0) {
-    write(_err, _wlen("Could not connect to port\n"));
-    return -1;
+    // write(_err, _wlen("Could not connect to port\n"));
+    return -2;
   }
 
   if (strstr(app->buffer, "Port unsubscribed") != 0) {
     write(_err, _wlen("Lost connection to port\n"));
-    return -1;
+    return -2;
   }
 
   uint port = 0;
@@ -585,4 +573,90 @@ void logCommands(Data app) {
 
     printf("%s\n", c.str);
   }
+}
+
+void waitForConnection(Data *app) {
+  write(_out, _wlen("Trying to connect...\n"));
+  int tmp_chan[2];
+  char haystack[1024];
+  char needle[24];
+  sprintf(needle, "client %u:", app->port);
+
+  if (pipe(tmp_chan) == -1) {
+    write(_err, _wlen("Pipe error\n"));
+    exit(1);
+  }
+
+  while (true) {
+    int pid = fork();
+    if (pid == -1) {
+      write(_err, _wlen("fork error\n"));
+      exit(1);
+    }
+
+    if (pid == 0) {
+      close(tmp_chan[_in]);
+      dup2(tmp_chan[_out], _out);
+      dup2(tmp_chan[_out], _err);
+
+      execlp("aconnect", "aconnect", "-i", 0);
+      exit(0);
+    } else {
+      int bytes = read(tmp_chan[_in], haystack, sizeof(haystack) - 1);
+      if (bytes == -1) {
+        write(_err, _wlen("acconnect read error\n"));
+        exit(1);
+      }
+      haystack[bytes] = 0;
+      waitpid(pid, 0, 0);
+
+      if (strstr(haystack, needle)) {
+        write(_out, _wlen("Connected to port "));
+        write(_out, _wlen(app->port_str));
+        write(_out, _wlen("\n"));
+        close(tmp_chan[_in]);
+        return;
+      }
+      sleep(_retry_connection_secs);
+    }
+  }
+}
+
+// ignores any events sent before the app started
+void clearChannel(Data *app) {
+  fd_set fds;
+  FD_ZERO(&fds);
+  FD_SET(app->channel[_in], &fds);
+
+  struct timeval timeout = {.tv_sec = 0, .tv_usec = 100000};
+  int leftover_msgs = select(app->channel[_in] + 1, &fds, 0, 0, &timeout);
+  while (leftover_msgs) {
+    readLine(app, _aseq_log_len);
+    leftover_msgs = select(app->channel[_in] + 1, &fds, 0, 0, &timeout);
+  }
+}
+
+int startAseqDump(Data *app, int last_pid) {
+  if (last_pid != -1) {
+    kill(last_pid, SIGKILL);
+    waitpid(last_pid, NULL, 0);
+  }
+
+  int pid = fork();
+
+  if (pid == -1) {
+    write(_err, _wlen("fork error\n"));
+    exit(1);
+  }
+  if (pid == 0) {
+    close(app->channel[_in]);
+    dup2(app->channel[_out], _out);
+    dup2(app->channel[_out], _err);
+
+    execlp("aseqdump", "aseqdump", "-p", app->port_str, 0);
+    write(_out, _wlen("_exit\n"));
+    exit(0);
+  }
+
+  return pid;
 }
