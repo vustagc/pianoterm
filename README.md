@@ -12,7 +12,9 @@ Linux CLI tool to assign shell commands to keys or knobs on a USB MIDI Keyboard/
 pianoterm <port>
 ```
 
-Note: Assumes ALSA is used as the soundcard driver, you can use acconnect -i to find the desired midi port.
+Note: 
+- It will keep trying to connect until it finds the port, use ctrl+c to stop it
+- Assumes ALSA is used as the soundcard driver, you can use acconnect -i to find the desired midi port.
 
 ## Configuration
 
