@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,24 +47,21 @@ const char *C_CH = "Control change";
 //
 // alsactl (aseqdump) version 1.2.15.2
 
-enum trigger {
+typedef enum {
   on_press,
   on_release,
   on_hold,
-};
-typedef enum trigger Trigger;
+} Trigger;
 
-enum event_type { e_note, e_controller };
-typedef enum event_type EventType;
+typedef enum { e_note, e_controller } EventType;
 
-struct shell_command {
+typedef struct {
   char *path;
   uint argc;
   char **argv;
-};
-typedef struct shell_command ShellCommand;
+} ShellCommand;
 
-struct user_command {
+typedef struct user_command {
   uint midi_id; // note or controller
   EventType type;
   union {
@@ -72,20 +70,18 @@ struct user_command {
   };
   char *str;
   int pid;
-};
-typedef struct user_command UserCommand;
+} UserCommand;
 
-struct midi_event {
+typedef struct midi_event {
   uint id;
   EventType type;
   union {
     Trigger note_trigger;
     uint controller_value;
   };
-};
-typedef struct midi_event MidiEvent;
+} MidiEvent;
 
-struct app_data {
+typedef struct app_data {
   int channel[2];
   char buffer[124];
   uint port;
@@ -93,8 +89,7 @@ struct app_data {
   Trigger trigger_state;
   UserCommand *commands;
   uint n_commands;
-};
-typedef struct app_data Data;
+} Data;
 
 int readLine(Data *app, int len);
 MidiEvent getEvent(Data app);
@@ -165,7 +160,7 @@ int main(int argc, char **argv) {
 
     MidiEvent event = getEvent(app);
     if (event.id == -1) {
-      printf("Unexpected error\n");
+      write(_err, _wlen("Unexpected error\n"));
       continue;
     }
     runCommand(&app, event);
@@ -369,12 +364,6 @@ void runCommand(Data *app, MidiEvent e) {
 
       } else if (t == on_hold) {
         if (e.note_trigger == on_press) {
-          printf("Press\n");
-          // if (app->commands[i].pid > 0) {
-          //   kill(app->commands[i].pid, SIGKILL);
-          //   waitpid(app->commands[i].pid, NULL, 0);
-          // }
-
           int pid = fork();
           if (pid == 0) {
             // this should prob be a thread instead
@@ -397,7 +386,6 @@ void runCommand(Data *app, MidiEvent e) {
 
         if (e.note_trigger == on_release) {
           if (app->commands[i].pid > 0) {
-            printf("Released\n");
             kill(app->commands[i].pid, SIGKILL);
             waitpid(app->commands[i].pid, 0, 0);
           }
