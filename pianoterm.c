@@ -38,12 +38,12 @@ const char *C_CH = "Control change";
 // change user_cmd to store an array of notes (can be static, since only 10)
 // read the next 10 lines, instead of one-by-one, check if 'note on' matches
 // notes in cmd (for n lines in cmd) also figure out syntax for config file
-// TODO: if no argument is passed try to find the port, using aconnect -i
 // TODO: allow config to use standard notation and convert to key code (C#1 =
 // "echo hello")
 // TODO: option to pass in config file path
 // TODO: option to reload config file?
 // TODO: check if instance already running on the same port
+// TODO: cleanup the code
 //
 // alsactl (aseqdump) version 1.2.15.2
 

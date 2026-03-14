@@ -9,7 +9,11 @@ Linux CLI tool to assign shell commands to keys or knobs on a USB MIDI Keyboard/
 ## Usage
 
 ```bash
-pianoterm <port>
+# options:
+# find by channel port. (e.g: pianoterm -p 22)
+# find by channel name. (e.g: pianoterm -n "Digital Piano")
+
+pianoterm [option] <port | name>
 ```
 
 Note: 
