@@ -386,7 +386,7 @@ void runCommand(Data *app, MidiEvent e) {
           execvp(c->path, c->argv);
           exit(0);
         } else {
-          waitpid(pid, 0, 0);
+          // waitpid(pid, 0, 0);
         }
 
       } else if (t == on_hold) {
@@ -662,7 +662,9 @@ void waitForConnection(Data *app) {
           }
           app->port = (uint)port_num;
           snprintf(app->port_str, _port_digits, "%u", app->port);
-          printf("Connecting to port %u\n", app->port);
+          write(_out, _wlen("Connecting to port"));
+          write(_out, _wlen(app->port_str));
+          write(_out, _wlen("\n"));
           return;
         }
       }
