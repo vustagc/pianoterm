@@ -19,7 +19,7 @@ pianoterm [option] <port | name>
 Note: 
 - It will keep trying to connect until it finds the port, use ctrl+c to stop it
 - You must have aconnect and aseqdump in your path
-- You can use 'acconect -i' to find the port
+- You can use 'acconect -i' to find the port/name
 
 ## Configuration
 
