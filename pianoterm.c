@@ -86,6 +86,7 @@ typedef struct app_data {
   char buffer[124];
   uint port;
   char port_str[_port_digits];
+  char *name;
   Trigger trigger_state;
   UserCommand *commands;
   uint n_commands;
@@ -107,16 +108,42 @@ int main(int argc, char **argv) {
   Data app;
   app.trigger_state = on_press;
   app.port = 0;
+  app.name = NULL;
   app.n_commands = 0;
   memset(app.buffer, 0, sizeof(app.buffer));
 
-  if (argc >= 2) {
+  // assume port if no flags
+  if (argc == 2) {
     long int port = strtol(argv[1], NULL, 10);
     if (port <= 0 || port >= UINT16_MAX) {
       write(_out, _wlen("Invalid port\n"));
       return 1;
     }
     app.port = (uint)port;
+  }
+
+  if (argc > 2) {
+    // get flags (-p or -n)
+    // port or name
+    if (strlen(argv[1]) < 2 || argv[1][0] != '-') {
+      write(_out, _wlen("No option provided\n"));
+      return 1;
+    }
+
+    const char flag = argv[1][1];
+    if (flag == 'p') { // port
+      long int port = strtol(argv[2], NULL, 10);
+      if (port <= 0 || port >= UINT16_MAX) {
+        write(_out, _wlen("Invalid port\n"));
+        return 1;
+      }
+      app.port = (uint)port;
+    }
+
+    if (flag == 'n') { // name
+      app.port = 0;
+      app.name = argv[2];
+    }
   }
 
   if (argc < 2) {
@@ -135,9 +162,9 @@ int main(int argc, char **argv) {
     write(_err, _wlen("pipe error\n"));
     return 1;
   };
-  write(_out, _wlen("MIDI port "));
-  write(_out, _wlen(app.port_str));
-  write(_out, _wlen("\n"));
+  // write(_out, _wlen("MIDI port "));
+  // write(_out, _wlen(app.port_str));
+  // write(_out, _wlen("\n"));
 
   int pid = -1;
 
@@ -574,7 +601,8 @@ void waitForConnection(Data *app) {
   int tmp_chan[2];
   char haystack[1024];
   char needle[24];
-  sprintf(needle, "client %u:", app->port);
+  if (app->port)
+    sprintf(needle, "client %u:", app->port);
 
   if (pipe(tmp_chan) == -1) {
     write(_err, _wlen("Pipe error\n"));
@@ -604,12 +632,39 @@ void waitForConnection(Data *app) {
       haystack[bytes] = 0;
       waitpid(pid, 0, 0);
 
-      if (strstr(haystack, needle)) {
-        write(_out, _wlen("Connected to port "));
-        write(_out, _wlen(app->port_str));
-        write(_out, _wlen("\n"));
-        close(tmp_chan[_in]);
-        return;
+      if (app->port) {
+        if (strstr(haystack, needle)) {
+          write(_out, _wlen("Connected to port "));
+          write(_out, _wlen(app->port_str));
+          write(_out, _wlen("\n"));
+          close(tmp_chan[_in]);
+          return;
+        }
+      } else {
+
+        char *line = strstr(haystack, app->name);
+        if (line) {
+          while (!(*line == '\n' || *line == 0))
+            line--;
+          line++;
+
+          char *port_found = strstr(line, "client ");
+          if (!port_found) {
+            write(_err, _wlen("Expected client port, did not find\n"));
+            exit(1);
+          }
+          port_found += strlen("client ");
+
+          long int port_num = strtol(port_found, NULL, 10);
+          if (port_num <= 0 || port_num >= UINT16_MAX) {
+            write(_out, _wlen("Invalid portss\n"));
+            exit(1);
+          }
+          app->port = (uint)port_num;
+          snprintf(app->port_str, _port_digits, "%u", app->port);
+          printf("Connecting to port %u\n", app->port);
+          return;
+        }
       }
       sleep(_retry_connection_secs);
     }
