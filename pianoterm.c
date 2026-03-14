@@ -376,8 +376,8 @@ void runCommand(Data *app, MidiEvent e) {
     switch (e.type) {
     case e_note:
       Trigger t = app->commands[i].note_trigger;
-      if (t == e.note_trigger && e.note_trigger == on_press ||
-          e.note_trigger == on_release) {
+      if (t == e.note_trigger && (e.note_trigger == on_press ||
+          e.note_trigger == on_release)) {
         int pid = fork();
         if (pid == -1) {
           write(_err, _wlen("Fork error\n"));
