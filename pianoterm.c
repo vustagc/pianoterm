@@ -376,8 +376,8 @@ void runCommand(Data *app, MidiEvent e) {
     switch (e.type) {
     case e_note:
       Trigger t = app->commands[i].note_trigger;
-      if (t == e.note_trigger && (e.note_trigger == on_press ||
-          e.note_trigger == on_release)) {
+      if (t == e.note_trigger &&
+          (e.note_trigger == on_press || e.note_trigger == on_release)) {
         int pid = fork();
         if (pid == -1) {
           write(_err, _wlen("Fork error\n"));
@@ -603,8 +603,11 @@ void waitForConnection(Data *app) {
   int tmp_chan[2];
   char haystack[1024];
   char needle[24];
-  if (app->name == NULL && app->port != 0)
+  if (app->name) {
+    app->port = 0;
+  } else {
     sprintf(needle, "client %u:", app->port);
+  }
 
   if (pipe(tmp_chan) == -1) {
     write(_err, _wlen("Pipe error\n"));
@@ -659,7 +662,7 @@ void waitForConnection(Data *app) {
 
           long int port_num = strtol(port_found, NULL, 10);
           if (port_num <= 0 || port_num >= UINT16_MAX) {
-            write(_out, _wlen("Invalid portss\n"));
+            write(_out, _wlen("Invalid port\n"));
             exit(1);
           }
           app->port = (uint)port_num;
