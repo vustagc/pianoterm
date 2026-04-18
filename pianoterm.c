@@ -7,113 +7,7 @@
 #include <unistd.h>
 #include <wait.h>
 
-#define _conf_path "/.config/pianoterm/config"
-#define _retry_connection_secs 60
-#define _on_hold_repeat_delay_ms 100
-#define _port_digits 4
-
-#define UINT16_MAX 65535
-#define _aseq_log_len 78
-#define _out STDOUT_FILENO
-#define _in STDIN_FILENO
-#define _err STDERR_FILENO
-#define _wlen(str) str, strlen(str)
-#define _wsize(str) str, sizeof(str)
-#define _wstart(c)                                                             \
-  while (*(c) == ' ')                                                          \
-    c++;
-#define _wend(c)                                                               \
-  while (!(*c == ' ' || *c == 0 || *c == '#'))                                 \
-    c++;
-#define _cmdend(c)                                                             \
-  while (!(*c == 0 || *c == '#'))                                              \
-    c++;
-
-const char *N_OFF = "Note off";
-const char *N_ON = "Note on";
-const char *C_CH = "Control change";
-
-// TODO: chord on_press support (store multiple notes in a cmd)
-// define a limit (10 for 10 fingers)
-// change user_cmd to store an array of notes (can be static, since only 10)
-// read the next 10 lines, instead of one-by-one, check if 'note on' matches
-// notes in cmd (for n lines in cmd) also figure out syntax for config file
-// TODO: allow config to use standard notation and convert to key code (C#1 =
-// "echo hello")
-// TODO: option to pass in config file path
-// TODO: option to reload config file?
-// TODO: check if instance already running on the same port
-// TODO: cleanup the code
-//
-// alsactl (aseqdump) version 1.2.15.2
-
-typedef enum {
-  on_press,
-  on_release,
-  on_hold,
-} Trigger;
-
-typedef enum {
-  e_note,
-  e_controller,
-} EventType;
-
-typedef enum {
-  f_port = 'p',
-  f_name = 'n',
-  f_config = 'c',
-} Flag;
-
-typedef struct {
-  char *path;
-  uint argc;
-  char **argv;
-} ShellCommand;
-
-typedef struct user_command {
-  uint midi_id; // note or controller
-  EventType type;
-  union {
-    Trigger note_trigger;
-    uint controller_value;
-  };
-  char *str;
-  int pid;
-} UserCommand;
-
-typedef struct midi_event {
-  uint id;
-  EventType type;
-  union {
-    Trigger note_trigger;
-    uint controller_value;
-  };
-} MidiEvent;
-
-typedef struct app_data {
-  int channel[2];
-  char buffer[124];
-  uint port;
-  char port_str[_port_digits];
-  char *name;
-  char *config;
-  Trigger trigger_state;
-  UserCommand *commands;
-  uint n_commands;
-} Data;
-
-int readLine(Data *app, int len);
-MidiEvent getEvent(Data app);
-void runCommand(Data *app, MidiEvent e);
-ShellCommand *parseCommand(char *src);
-void freeCommand(ShellCommand *cmd);
-int loadConfig(Data *app);
-char *seekToNext(char *cur, char target);
-void logCommands(Data app);
-void waitForConnection(Data *app);
-int startAseqDump(Data *app, int last_pid);
-void clearChannel(Data *app);
-int parseOption(Data *app, char flag, char *value);
+#include "pianoterm.h"
 
 int main(int argc, char **argv) {
   Data app;
@@ -125,15 +19,13 @@ int main(int argc, char **argv) {
   memset(app.buffer, 0, sizeof(app.buffer));
 
   if (argc < 2) {
-    write(_out, _wlen("Usage: "));
-    write(_out, _wlen(argv[0]));
-    write(_out, _wlen("[-p <port> | -n <name>] [-c <config>]\n"));
+    printf("Usage: %s [-p <port> | -n <name>] [-c <config>]\n", argv[0]);
     return 1;
   }
 
   // assume port if no flags
   if (argc == 2) {
-      parseOption(&app, f_port, argv[1]);
+    parseOption(&app, f_port, argv[1]);
   } else {
     // process flags
     for (int i = 1; i < argc; i += 2) {
@@ -179,15 +71,16 @@ int main(int argc, char **argv) {
   while (1) {
     int ret = readLine(&app, _aseq_log_len);
 
-    if (ret == -1) // error
+    if (ret == re_exit) {
       break;
-    else if (ret == -2) { // reconnect
+    } else if (ret == re_ignore) {
+      continue;
+    } else if (ret == re_retry) {
       waitForConnection(&app);
       pid = startAseqDump(&app, pid);
       clearChannel(&app);
       continue;
-    } else if (ret == 0) // wrong format
-      continue;
+    }
 
     MidiEvent event = getEvent(app);
     if (event.id == -1) {
@@ -216,14 +109,13 @@ int loadConfig(Data *app) {
     snprintf(app->config, bytes, "%s%s", home, _conf_path);
   }
 
-  int fd = open(app->config, O_RDONLY);
+  // rdwr so it fails if file is a directory, even though we don't write to it
+  int fd = open(app->config, O_RDWR);
   if (fd == -1) {
     write(_err, _wlen("Could not open config file\n"));
     return -1;
   }
-  write(_out, _wlen("Loading config: "));
-  write(_out, _wlen(app->config));
-  write(_out, _wlen("\n"));
+  printf("Loading config: %s\n", app->config);
 
   char b;
   uint l_count = 0;
@@ -382,7 +274,7 @@ int parseOption(Data *app, char flag, char *value) {
   case f_port:
     long int port = strtol(value, NULL, 10);
     if (port <= 0 || port >= UINT16_MAX) {
-      write(_out, _wlen("Invalid port\n"));
+      printf("Invalid port\n");
       return -1;
     }
     app->port = (uint)port;
@@ -398,7 +290,7 @@ int parseOption(Data *app, char flag, char *value) {
     break;
 
   default:
-    write(_out, _wlen("Uknown flag\n"));
+    printf("Uknown flag\n");
     return -1;
   }
 
@@ -534,40 +426,35 @@ void freeCommand(ShellCommand *cmd) {
 }
 
 // read line from aseqdump and update buffer
-// return values:
-// (-2) should reconnect
-// (-1) error
-// (0) ignore, wrong format
-// (1) ok, expected format
 int readLine(Data *app, int len) {
   int bytes = read(app->channel[_in], app->buffer, len);
   if (bytes == -1) {
     write(_err, _wlen("read error\n"));
-    return -1;
+    return re_exit;
   }
   app->buffer[bytes] = 0;
 
   if (strncmp(app->buffer, "_exit", 5) == 0) {
     write(_err, _wlen("could not find/start aseqdump\n"));
-    return -1;
+    return re_exit;
   }
 
   if (strstr(app->buffer, "Cannot connect") != 0) {
-    // write(_err, _wlen("Could not connect to port\n"));
-    return -2;
+    write(_err, _wlen("Could not connect to port\n"));
+    return re_retry;
   }
 
   if (strstr(app->buffer, "Port unsubscribed") != 0) {
     write(_err, _wlen("Lost connection to port\n"));
-    return -2;
+    return re_retry;
   }
 
   uint port = 0;
   int n = sscanf(app->buffer, "%3u:", &port);
   if (!(n == 1 && port == app->port))
-    return 0;
+    return re_ignore;
 
-  return 1;
+  return re_ok;
 }
 
 MidiEvent getEvent(Data app) {
@@ -640,7 +527,7 @@ void logCommands(Data app) {
 }
 
 void waitForConnection(Data *app) {
-  write(_out, _wlen("Trying to connect...\n"));
+  printf("Trying to connect...\n");
   int tmp_chan[2];
   char haystack[1024];
   char needle[24];
@@ -680,9 +567,7 @@ void waitForConnection(Data *app) {
 
       if (app->port) {
         if (strstr(haystack, needle)) {
-          write(_out, _wlen("Connected to port "));
-          write(_out, _wlen(app->port_str));
-          write(_out, _wlen("\n"));
+          printf("Connected to port %s\n", app->port_str);
           close(tmp_chan[_in]);
           return;
         }
@@ -703,14 +588,12 @@ void waitForConnection(Data *app) {
 
           long int port_num = strtol(port_found, NULL, 10);
           if (port_num <= 0 || port_num >= UINT16_MAX) {
-            write(_out, _wlen("Invalid port\n"));
+            printf("Invalid port\n");
             exit(1);
           }
           app->port = (uint)port_num;
           snprintf(app->port_str, _port_digits, "%u", app->port);
-          write(_out, _wlen("Connected to port "));
-          write(_out, _wlen(app->port_str));
-          write(_out, _wlen("\n"));
+          printf("Connected to port %s\n", app->port_str);
           return;
         }
       }
@@ -751,7 +634,7 @@ int startAseqDump(Data *app, int last_pid) {
     dup2(app->channel[_out], _err);
 
     execlp("aseqdump", "aseqdump", "-p", app->port_str, 0);
-    write(_out, _wlen("_exit\n"));
+    printf("_exit\n");
     exit(0);
   }
 

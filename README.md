@@ -91,3 +91,9 @@ cd pianoterm && make
 ## Playing Supertux on the Piano
 
 https://github.com/user-attachments/assets/718a9328-6b70-4cfa-97d6-e355dd0e5b6a
+
+## Backlog
+- chord on_press support
+- allow config to use standard notation (C#1 = "echo hello")
+- reload config file
+- check if instance already running on the same port
