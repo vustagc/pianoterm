@@ -10,10 +10,11 @@ Linux CLI tool to assign shell commands to keys or knobs on a USB MIDI Keyboard/
 
 ```bash
 # options:
-# find by channel port. (e.g: pianoterm -p 22)
-# find by channel name. (e.g: pianoterm -n "Digital Piano")
+# find by port number. (e.g. pianoterm -p 22)
+# find by device name. (e.g. pianoterm -n "Digital Piano")
+# specify config path. (e.g. pianoterm -p 22 -c ~/path/to/config)
 
-pianoterm [option] <port | name>
+pianoterm [-p|-n] <port | name> [-c] <config_path>
 ```
 
 Note: 
@@ -23,7 +24,7 @@ Note:
 
 ## Configuration
 
-- path: ~/.config/pianoterm/config
+- default path: ~/.config/pianoterm/config
 
 ### Example Config
 
