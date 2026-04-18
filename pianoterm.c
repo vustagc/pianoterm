@@ -53,7 +53,16 @@ typedef enum {
   on_hold,
 } Trigger;
 
-typedef enum { e_note, e_controller } EventType;
+typedef enum {
+  e_note,
+  e_controller,
+} EventType;
+
+typedef enum {
+  f_port = 'p',
+  f_name = 'n',
+  f_config = 'c',
+} Flag;
 
 typedef struct {
   char *path;
@@ -87,6 +96,7 @@ typedef struct app_data {
   uint port;
   char port_str[_port_digits];
   char *name;
+  char *config;
   Trigger trigger_state;
   UserCommand *commands;
   uint n_commands;
@@ -97,74 +107,68 @@ MidiEvent getEvent(Data app);
 void runCommand(Data *app, MidiEvent e);
 ShellCommand *parseCommand(char *src);
 void freeCommand(ShellCommand *cmd);
-void loadConfig(Data *app);
+int loadConfig(Data *app);
 char *seekToNext(char *cur, char target);
 void logCommands(Data app);
 void waitForConnection(Data *app);
 int startAseqDump(Data *app, int last_pid);
 void clearChannel(Data *app);
+int parseOption(Data *app, char flag, char *value);
 
 int main(int argc, char **argv) {
   Data app;
   app.trigger_state = on_press;
   app.port = 0;
   app.name = NULL;
+  app.config = NULL;
   app.n_commands = 0;
   memset(app.buffer, 0, sizeof(app.buffer));
 
-  // assume port if no flags
-  if (argc == 2) {
-    long int port = strtol(argv[1], NULL, 10);
-    if (port <= 0 || port >= UINT16_MAX) {
-      write(_out, _wlen("Invalid port\n"));
-      return 1;
-    }
-    app.port = (uint)port;
-  }
-
-  if (argc > 2) {
-    // get flags (-p or -n)
-    // port or name
-    if (strlen(argv[1]) < 2 || argv[1][0] != '-') {
-      write(_out, _wlen("No option provided\n"));
-      return 1;
-    }
-
-    const char flag = argv[1][1];
-    if (flag == 'p') { // port
-      long int port = strtol(argv[2], NULL, 10);
-      if (port <= 0 || port >= UINT16_MAX) {
-        write(_out, _wlen("Invalid port\n"));
-        return 1;
-      }
-      app.port = (uint)port;
-    }
-
-    if (flag == 'n') { // name
-      app.port = 0;
-      app.name = argv[2];
-    }
-  }
-
   if (argc < 2) {
-    // TODO: try to find port automatically using aconnect -i
     write(_out, _wlen("Usage: "));
     write(_out, _wlen(argv[0]));
-    write(_out, _wlen(" <port>\n"));
+    write(_out, _wlen("[-p <port> | -n <name>] [-c <config>]\n"));
+    return 1;
+  }
+
+  // assume port if no flags
+  if (argc == 2) {
+      parseOption(&app, f_port, argv[1]);
+  } else {
+    // process flags
+    for (int i = 1; i < argc; i += 2) {
+      if (strlen(argv[i]) < 2 || argv[i][0] != '-') {
+        printf("Unknown flag: %s", argv[i]);
+        return 1;
+      }
+
+      if (i + 1 >= argc) {
+        printf("No value for flag: %s", argv[i]);
+        return 1;
+      }
+
+      if (parseOption(&app, argv[i][1], argv[i + 1]) == -1) {
+        printf("Could not parse flag: %s", argv[i]);
+        return 1;
+      }
+    }
+  }
+
+  if (app.port == 0 && app.name == NULL) {
+    printf("You must provide either the port or the name of the channel\n");
     return 1;
   }
 
   snprintf(app.port_str, _port_digits, "%u", app.port);
-  loadConfig(&app);
-  // logCommands(app);
+  if (loadConfig(&app) == -1) {
+    write(_err, _wlen("Error loading config\n"));
+    return 1;
+  }
 
   if (pipe(app.channel) == -1) {
     write(_err, _wlen("pipe error\n"));
     return 1;
   };
-  // write(_out, _wlen("MIDI port "));
-  // write(_out, _wlen(app.port_str));
-  // write(_out, _wlen("\n"));
 
   int pid = -1;
 
@@ -199,22 +203,26 @@ int main(int argc, char **argv) {
   return 0;
 }
 
-void loadConfig(Data *app) {
+int loadConfig(Data *app) {
   const char *home = getenv("HOME");
   if (!home) {
     write(_err, _wlen("$HOME variable not set\n"));
-    return;
+    return -1;
   }
 
-  char path[strlen(home) + strlen(_conf_path) + 1];
-  snprintf(_wsize(path), "%s%s", home, _conf_path);
+  if (!app->config) {
+    const int bytes = sizeof(char) * (strlen(home) + strlen(_conf_path) + 1);
+    app->config = (char *)malloc(bytes);
+    snprintf(app->config, bytes, "%s%s", home, _conf_path);
+  }
 
-  int fd = open(path, O_RDONLY);
+  int fd = open(app->config, O_RDONLY);
   if (fd == -1) {
-    return;
+    write(_err, _wlen("Could not open config file\n"));
+    return -1;
   }
   write(_out, _wlen("Loading config: "));
-  write(_out, _wlen(path));
+  write(_out, _wlen(app->config));
   write(_out, _wlen("\n"));
 
   char b;
@@ -362,6 +370,39 @@ void loadConfig(Data *app) {
     free(lines[l_cur]);
 
   close(fd);
+
+  return 0;
+}
+
+int parseOption(Data *app, char flag, char *value) {
+  if (!value)
+    return -1;
+
+  switch (flag) {
+  case f_port:
+    long int port = strtol(value, NULL, 10);
+    if (port <= 0 || port >= UINT16_MAX) {
+      write(_out, _wlen("Invalid port\n"));
+      return -1;
+    }
+    app->port = (uint)port;
+    break;
+
+  case f_name:
+    app->port = 0;
+    app->name = value;
+    break;
+
+  case f_config:
+    app->config = value;
+    break;
+
+  default:
+    write(_out, _wlen("Uknown flag\n"));
+    return -1;
+  }
+
+  return 0;
 }
 
 void runCommand(Data *app, MidiEvent e) {
