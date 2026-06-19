@@ -1,4 +1,4 @@
 all: pianoterm.c
-	cc pianoterm.c -o pianoterm
+	cc pianoterm.c -lasound -o pianoterm
 run: all
 	./pianoterm

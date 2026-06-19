@@ -10,17 +10,15 @@ Linux CLI tool to assign shell commands to keys or knobs on a USB MIDI Keyboard/
 
 ```bash
 # options:
-# find by port number. (e.g. pianoterm -p 22)
-# find by device name. (e.g. pianoterm -n "Digital Piano")
+# find by alsa client name. (e.g. pianoterm -n "Digital Piano")
 # specify config path. (e.g. pianoterm -p 22 -c ~/path/to/config)
+# find by alsa client id. (e.g. pianoterm -p 22)
 
 pianoterm [-p|-n] <port | name> [-c] <config_path>
 ```
 
 Note: 
-- It will keep trying to connect until it finds the port, use ctrl+c to stop it
-- You must have aconnect and aseqdump in your path
-- You can use 'acconect -i' to find the port/name
+- Run 'acconect -i' to find the alsa client name/port
 
 ## Configuration
 
@@ -84,17 +82,6 @@ git clone https://github.com/vustagc/pianoterm.git
 cd pianoterm && make
 ```
 
-### Dependencies
-- C compiler
-- alsactl (1.2.15.2)
-- make (optional)
-
 ## Playing Supertux on the Piano
 
 https://github.com/user-attachments/assets/718a9328-6b70-4cfa-97d6-e355dd0e5b6a
-
-## Backlog
-- chord on_press support
-- allow config to use standard notation (C#1 = "echo hello")
-- reload config file
-- check if instance already running on the same port

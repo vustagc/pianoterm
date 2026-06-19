@@ -1,9 +1,10 @@
+#include <alsa/asoundlib.h>
+
 #define _conf_path "/.config/pianoterm/config"
 #define _retry_connection_secs 60
 #define _on_hold_repeat_delay_ms 100
 #define _port_digits 4
 
-#define UINT16_MAX 65535
 #define _aseq_log_len 78
 #define _out STDOUT_FILENO
 #define _in STDIN_FILENO
@@ -75,19 +76,20 @@ typedef struct midi_event {
 } MidiEvent;
 
 typedef struct app_data {
-  int channel[2];
   char buffer[124];
   uint port;
-  char port_str[_port_digits];
   char *name;
   char *config;
   Trigger trigger_state;
   UserCommand *commands;
   uint n_commands;
+
+  snd_seq_t *h_alsa;
+  snd_seq_port_subscribe_t *sub_handle;
+  int client_id; // alsa client 128 -> 192
 } Data;
 
-int readLine(Data *app, int len);
-MidiEvent getEvent(Data app);
+int parseArguments(Data *app, int argc, char **argv);
 void runCommand(Data *app, MidiEvent e);
 ShellCommand *parseCommand(char *src);
 void freeCommand(ShellCommand *cmd);
@@ -95,6 +97,9 @@ int loadConfig(Data *app);
 char *seekToNext(char *cur, char target);
 void logCommands(Data app);
 void waitForConnection(Data *app);
-int startAseqDump(Data *app, int last_pid);
 void clearChannel(Data *app);
 int parseOption(Data *app, char flag, char *value);
+void resetSubscription(Data *app);
+void subscribeToClient(Data *app, int client_id, int client_port);
+int tryFindClient(Data *app);
+int initAlsa(Data *app);
