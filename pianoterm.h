@@ -21,9 +21,7 @@
   while (!(*c == 0 || *c == '#'))                                              \
     c++;
 
-const char *N_OFF = "Note off";
-const char *N_ON = "Note on";
-const char *C_CH = "Control change";
+#define write_err(s) write(_err, _wlen(s));
 
 typedef enum {
   on_press,
@@ -41,13 +39,6 @@ typedef enum {
   f_name = 'n',
   f_config = 'c',
 } Flag;
-
-typedef enum {
-  re_retry = -2,
-  re_exit = -1,
-  re_ignore = 0,
-  re_ok = 1,
-} ReadError;
 
 typedef struct {
   char *path;

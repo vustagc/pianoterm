@@ -10,8 +10,6 @@
 
 #include "pianoterm.h"
 
-#define write_err(s) write(_err, _wlen(s));
-
 int main(int argc, char **argv) {
   Data app;
   memset(&app, 0, sizeof(app));
